@@ -11,6 +11,7 @@ jobs:
     outputs:
       new_version: ${{ steps.version.outputs.new_version }}
       repo_name: ${{ steps.define_repo_name.outputs.repo_name }}
+      repo_name_lower: ${{ steps.define_repo_name.outputs.repo_name_lower }}
 
     steps:
       - name: Checkout code
@@ -104,28 +105,32 @@ jobs:
         run: |
           REPO_NAME="${{ github.repository }}"
           REPO_NAME="${REPO_NAME#*/}"
-          echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV 
+          REPO_NAME_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          echo "REPO_NAME=$REPO_NAME" >> $GITHUB_ENV
+          echo "REPO_NAME_LOWER=$REPO_NAME_LOWER" >> $GITHUB_ENV
           echo "repo_name=$REPO_NAME" >> $GITHUB_OUTPUT
+          echo "repo_name_lower=$REPO_NAME_LOWER" >> $GITHUB_OUTPUT
           echo "Repositório: $REPO_NAME"
+          echo "Repositório minúsculo: $REPO_NAME_LOWER"
 
       - name: Verificar e criar repositório no Docker Hub (se necessário)
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          echo "Verificando repositório: $REPO_NAME"
+          echo "Verificando repositório: $REPO_NAME_LOWER"
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -u $DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN \
-            "https://hub.docker.com/v2/repositories/$DOCKERHUB_USERNAME/$REPO_NAME/")
+            "https://hub.docker.com/v2/repositories/$DOCKERHUB_USERNAME/$REPO_NAME_LOWER/")
           
           if [ "$RESPONSE" -eq 404 ]; then
             echo "Repositório não existe. Criando repositório no Docker Hub..."
             curl -s -X POST -u $DOCKERHUB_USERNAME:$DOCKERHUB_TOKEN \
               -H "Content-Type: application/json" \
-              -d '{"name": "'$REPO_NAME'", "is_private": true}' \
+              -d '{"name": "'$REPO_NAME_LOWER'", "is_private": true}' \
               "https://hub.docker.com/v2/repositories/$DOCKERHUB_USERNAME/"
-            echo "Repositório $REPO_NAME criado com sucesso!"
+            echo "Repositório $REPO_NAME_LOWER criado com sucesso!"
           else
-            echo "Repositório $REPO_NAME já existe no Docker Hub."
+            echo "Repositório $REPO_NAME_LOWER já existe no Docker Hub."
           fi
 
       - name: Inserir versão no App.js
@@ -144,15 +149,15 @@ jobs:
       - name: Criar imagem docker
         if: steps.version.outputs.should_deploy == 'true'
         run: |
-          echo "Iniciando build da imagem Docker para o repositório $REPO_NAME"
-          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/$REPO_NAME:${{ steps.version.outputs.new_version }} .
-          docker tag ${{ secrets.DOCKERHUB_USERNAME }}/$REPO_NAME:${{ steps.version.outputs.new_version }} ${{ secrets.DOCKERHUB_USERNAME }}/$REPO_NAME:latest
+          echo "Iniciando build da imagem Docker"
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/${{ steps.define_repo_name.outputs.repo_name_lower }}:${{ steps.version.outputs.new_version }} .
+          docker tag ${{ secrets.DOCKERHUB_USERNAME }}/${{ steps.define_repo_name.outputs.repo_name_lower }}:${{ steps.version.outputs.new_version }} ${{ secrets.DOCKERHUB_USERNAME }}/${{ steps.define_repo_name.outputs.repo_name_lower }}:latest
 
       - name: Efetuar push da imagem
         if: steps.version.outputs.should_deploy == 'true'
         run: |
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$REPO_NAME:${{ steps.version.outputs.new_version }}
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/$REPO_NAME:latest
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ steps.define_repo_name.outputs.repo_name_lower }}:${{ steps.version.outputs.new_version }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/${{ steps.define_repo_name.outputs.repo_name_lower }}:latest
 
       - name: Atualizar versão no package.json
         if: steps.version.outputs.should_deploy == 'true'
@@ -178,13 +183,11 @@ jobs:
     steps:
       - name: Verificar variáveis finais
         run: |
-          REPO_NAME="${{ needs.build.outputs.repo_name }}"
-          REPO_NAME_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
           echo "DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}"
-          echo "REPO_NAME: $REPO_NAME"
-          echo "REPO_NAME_LOWER: $REPO_NAME_LOWER"
+          echo "REPO_NAME: ${{ needs.build.outputs.repo_name }}"
+          echo "REPO_NAME_LOWER: ${{ needs.build.outputs.repo_name_lower }}"
           echo "NEW_VERSION: ${{ needs.build.outputs.new_version }}"
-          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/$REPO_NAME_LOWER:${{ needs.build.outputs.new_version }}"
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ needs.build.outputs.repo_name_lower }}:${{ needs.build.outputs.new_version }}"
           echo "Imagem completa: $IMAGE"
 
       - name: Deploy to EC2 via SSH
@@ -194,10 +197,9 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_PRIVATE_KEY }}
           script: |
-            REPO_NAME="${{ needs.build.outputs.repo_name }}"
-            REPO_NAME_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')
+            REPO_NAME="${{ needs.build.outputs.repo_name_lower }}"
             VERSION="${{ needs.build.outputs.new_version }}"
-            IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/$REPO_NAME_LOWER:$VERSION"
+            IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/$REPO_NAME:$VERSION"
 
             echo "🔄 Iniciando deploy da imagem: $IMAGE"
 
@@ -205,7 +207,7 @@ jobs:
             sudo systemctl start docker || sudo service docker start
 
             echo "🛑 Removendo container antigo (se existir)..."
-            docker rm -f $REPO_NAME_LOWER || echo "✔️ Nenhum container antigo para remover"
+            docker rm -f $REPO_NAME || echo "✔️ Nenhum container antigo para remover"
 
             echo "🧹 Removendo imagem local antiga (se existir)..."
             docker rmi -f "$IMAGE" || echo "✔️ Nenhuma imagem antiga encontrada com a tag: $IMAGE"
@@ -214,4 +216,4 @@ jobs:
             docker pull $IMAGE
 
             echo "🚀 Subindo novo container..."
-            docker run -d -p 3000:80 --name $REPO_NAME_LOWER $IMAGE
+            docker run -d -p 3000:80 --name $REPO_NAME $IMAGE
