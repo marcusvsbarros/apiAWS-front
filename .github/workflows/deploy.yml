@@ -1,4 +1,4 @@
-name: Build and Deploy React App
+name: Build and Deploy
 
 on:
   push:
@@ -6,51 +6,30 @@ on:
       - main
 
 env:
+  REPO_NAME: apiaws-front
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
   EC2_HOST: ${{ secrets.EC2_HOST }}
   EC2_USER: ${{ secrets.EC2_USER }}
   EC2_PRIVATE_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
-  GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
-    outputs:
-      new_version: ${{ steps.version.outputs.new_version }}
-      repo_name: ${{ steps.define_repo_name.outputs.repo_name }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # importante para pegar todas as tags e histórico completo
 
-      - name: Instalar dependências
-        run: npm install --force
+      - name: Fetch all tags
+        run: git fetch --tags
 
-      - name: Instalar semver
-        run: npm install -g semver
-
-      - name: Criar tag inicial se não existir
-        id: create_initial_tag
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          if [ -z "$(git tag)" ]; then
-            git config --global user.name 'github-actions'
-            git config --global user.email 'github-actions@github.com'
-            git tag -a v0.0.0 -m "Initial release"
-            git push origin v0.0.0
-          else
-            echo "Tag inicial já existe."
-          fi
-
-      - name: Calcular nova versão
+      - name: Calculate new version
         id: version
         run: |
-          git fetch --tags
-          LAST_TAG=$(git describe --tags `git rev-list --tags --max-count=1` 2>/dev/null || echo "v0.0.0")
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           echo "Última tag encontrada: $LAST_TAG"
 
           if [ "$LAST_TAG" = "v0.0.0" ]; then
@@ -77,11 +56,11 @@ jobs:
           NEW_VERSION=$CURRENT_VERSION
 
           if [[ $MAJOR -eq 1 ]]; then
-            NEW_VERSION=$(semver -i major $CURRENT_VERSION)
+            NEW_VERSION=$(npx semver -i major $CURRENT_VERSION)
           elif [[ $MINOR -eq 1 ]]; then
-            NEW_VERSION=$(semver -i minor $CURRENT_VERSION)
+            NEW_VERSION=$(npx semver -i minor $CURRENT_VERSION)
           elif [[ $PATCH -eq 1 ]]; then
-            NEW_VERSION=$(semver -i patch $CURRENT_VERSION)
+            NEW_VERSION=$(npx semver -i patch $CURRENT_VERSION)
           fi
 
           if [ -z "$NEW_VERSION" ]; then
@@ -91,84 +70,39 @@ jobs:
 
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Definir nome do repositório
-        id: define_repo_name
-        run: |
-          REPO_NAME="${{ github.repository }}"
-          REPO_NAME="${REPO_NAME#*/}"
-          REPO_NAME="${REPO_NAME,,}"
-          echo "repo_name=$REPO_NAME" >> $GITHUB_OUTPUT
-
-      - name: Validar version antes do build
-        run: |
-          echo "Versão calculada: ${{ steps.version.outputs.new_version }}"
-          if [ -z "${{ steps.version.outputs.new_version }}" ]; then
-            echo "❌ VERSION está vazia. Abortando."
-            exit 1
-          fi
-
-      - name: Buildar imagem Docker
+      - name: Build Docker image
         run: |
           VERSION=${{ steps.version.outputs.new_version }}
-          REPO_NAME=${{ steps.define_repo_name.outputs.repo_name }}
-
-          echo "Construindo imagem $DOCKERHUB_USERNAME/$REPO_NAME:$VERSION"
           docker build -t $DOCKERHUB_USERNAME/$REPO_NAME:$VERSION .
-
           docker tag $DOCKERHUB_USERNAME/$REPO_NAME:$VERSION $DOCKERHUB_USERNAME/$REPO_NAME:latest
+        env:
+          DOCKERHUB_USERNAME: ${{ env.DOCKERHUB_USERNAME }}
 
-      - name: Login no Docker Hub
+      - name: Login to Docker Hub
         uses: docker/login-action@v2
         with:
           username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ env.DOCKER_PASSWORD }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Push da imagem Docker
+      - name: Push Docker images
         run: |
           VERSION=${{ steps.version.outputs.new_version }}
-          REPO_NAME=${{ steps.define_repo_name.outputs.repo_name }}
           docker push $DOCKERHUB_USERNAME/$REPO_NAME:$VERSION
           docker push $DOCKERHUB_USERNAME/$REPO_NAME:latest
-
-      - name: Atualizar versão no package.json
-        run: |
-          VERSION=${{ steps.version.outputs.new_version }}
-          npm version $VERSION --no-git-tag-version
-
-      - name: Commit e push versão
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          git config --global user.name 'github-actions'
-          git config --global user.email 'github-actions@github.com'
-          git add package.json
-          git commit -m "chore(release): version $VERSION" || echo "No changes to commit"
-          git tag v$VERSION || echo "Tag já existe"
-          git push origin main --tags || echo "Push falhou"
+          DOCKERHUB_USERNAME: ${{ env.DOCKERHUB_USERNAME }}
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Deploy via SSH no EC2
+      - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v0.1.5
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          REPO_NAME: ${{ needs.build.outputs.repo_name }}
-          VERSION: ${{ needs.build.outputs.new_version }}
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_PRIVATE_KEY }}
+          host: ${{ env.EC2_HOST }}
+          username: ${{ env.EC2_USER }}
+          key: ${{ env.EC2_PRIVATE_KEY }}
           script: |
-            if [ -z "$VERSION" ]; then
-              echo "❌ ERROR: VERSION está vazia. Abortando deploy."
-              exit 1
-            fi
-
+            REPO_NAME="$REPO_NAME"
+            VERSION="${{ steps.version.outputs.new_version }}"
             IMAGE="$DOCKERHUB_USERNAME/$REPO_NAME:$VERSION"
+
             echo "🔄 Iniciando deploy da imagem: $IMAGE"
 
             sudo yum update -y || sudo apt update -y
@@ -181,7 +115,7 @@ jobs:
             docker rmi -f "$IMAGE" || echo "✔️ Nenhuma imagem antiga encontrada com a tag: $IMAGE"
 
             echo "⬇️ Baixando nova imagem..."
-            docker pull "$IMAGE"
+            docker pull $IMAGE
 
             echo "🚀 Subindo novo container..."
-            docker run -d -p 3000:80 --name "$REPO_NAME" "$IMAGE"
+            docker run -d -p 3000:80 --name $REPO_NAME $IMAGE
