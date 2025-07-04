@@ -14,14 +14,14 @@ env:
   EC2_PRIVATE_KEY: ${{ secrets.EC2_PRIVATE_KEY }}
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # importante para pegar todas as tags e histórico completo
+          fetch-depth: 0
 
       - name: Fetch all tags
         run: git fetch --tags
@@ -92,6 +92,11 @@ jobs:
         env:
           DOCKERHUB_USERNAME: ${{ env.DOCKERHUB_USERNAME }}
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v0.1.5
         with:
@@ -100,7 +105,7 @@ jobs:
           key: ${{ env.EC2_PRIVATE_KEY }}
           script: |
             REPO_NAME="$REPO_NAME"
-            VERSION="${{ steps.version.outputs.new_version }}"
+            VERSION="${{ needs.build.outputs.new_version }}"
             IMAGE="$DOCKERHUB_USERNAME/$REPO_NAME:$VERSION"
 
             echo "🔄 Iniciando deploy da imagem: $IMAGE"
