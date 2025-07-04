@@ -45,7 +45,7 @@ jobs:
         id: version
         run: |
           git fetch --tags
-          LAST_TAG=$(git describe --tags `git rev-list --tags --max-count=1`)
+          LAST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
           if [ -z "$LAST_TAG" ]; then
             LAST_TAG="v0.0.0"
           fi
@@ -81,8 +81,17 @@ jobs:
             NEW_VERSION=$(semver -i patch $CURRENT_VERSION)
           fi
 
+          echo "Calculated version: $NEW_VERSION"
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Validate version output
+        run: |
+          if [ -z "${{ steps.version.outputs.new_version }}" ]; then
+            echo "❌ ERROR: VERSION not calculated. Check your commit messages."
+            exit 1
+          fi
+          echo "✅ VERSION resolved: ${{ steps.version.outputs.new_version }}"
 
       - name: Define repository name
         id: define_repo_name
@@ -98,7 +107,7 @@ jobs:
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -u $DOCKERHUB_USERNAME:$DOCKER_PASSWORD "https://hub.docker.com/v2/repositories/$DOCKERHUB_USERNAME/$REPO_NAME/")
           if [ "$RESPONSE" -eq 404 ]; then
             echo "Repository not found. Creating..."
-            curl -s -X POST -u $DOCKERHUB_USERNAME:$DOCKERHUB_PASSWORD \
+            curl -s -X POST -u $DOCKERHUB_USERNAME:$DOCKER_PASSWORD \
               -H "Content-Type: application/json" \
               -d "{\"name\": \"$REPO_NAME\", \"is_private\": true}" \
               "https://hub.docker.com/v2/repositories/$DOCKERHUB_USERNAME/"
@@ -110,6 +119,7 @@ jobs:
       - name: Build Docker image
         run: |
           VERSION=${{ steps.version.outputs.new_version }}
+          echo "Building Docker image with version: $VERSION"
           docker build -t $DOCKERHUB_USERNAME/$REPO_NAME:$VERSION .
           docker tag $DOCKERHUB_USERNAME/$REPO_NAME:$VERSION $DOCKERHUB_USERNAME/$REPO_NAME:latest
 
@@ -155,7 +165,7 @@ jobs:
             IMAGE="$DOCKERHUB_USERNAME/$REPO_NAME:$VERSION"
             echo "Logging in to Docker Hub..."
             echo "$DOCKER_PASSWORD" | sudo docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-            echo "Starting Docker service..."
+            echo "Starting Docker..."
             sudo systemctl start docker || sudo service docker start
             CONTAINER_ID=$(sudo docker ps -aq --filter "name=^/${REPO_NAME}$")
             if [ -n "$CONTAINER_ID" ]; then
@@ -166,5 +176,5 @@ jobs:
             sudo docker rmi -f "$IMAGE" || true
             echo "Pulling new image..."
             sudo docker pull "$IMAGE"
-            echo "Running new container..."
+            echo "Running container..."
             sudo docker run -d -p 3000:80 --name $REPO_NAME "$IMAGE"
